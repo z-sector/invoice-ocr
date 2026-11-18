@@ -1,4 +1,4 @@
-"""FastAPI app: upload an invoice photo, run PaddleOCR on CPU, return parsed fields as JSON."""
+"""FastAPI service: accept an invoice image or PDF, run PaddleOCR on CPU, return parsed fields as JSON."""
 
 from __future__ import annotations
 
@@ -6,21 +6,17 @@ import logging
 import os
 import time
 from contextlib import asynccontextmanager
-from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
+from fastapi.responses import JSONResponse
 
-from .ocr import LANG_LABELS, PDF_TYPES, DocumentDecodeError, EngineRegistry, pdf_magic
+from .ocr import PDF_TYPES, DocumentDecodeError, EngineRegistry, pdf_magic
 from .parser import parse_invoice
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("invoice_ocr")
 
-BASE_DIR = Path(__file__).resolve().parent
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_MB", "15")) * 1024 * 1024
 IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/bmp", "image/tiff", "image/gif"}
 NEUTRAL_TYPES = {"", "application/octet-stream", "binary/octet-stream"}
@@ -43,22 +39,6 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
-app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
-templates = Jinja2Templates(directory=BASE_DIR / "templates")
-
-
-@app.get("/", response_class=HTMLResponse, include_in_schema=False)
-async def index(request: Request) -> HTMLResponse:
-    languages = [{"code": code, "label": LANG_LABELS.get(code, code)} for code in registry.langs]
-    return templates.TemplateResponse(
-        request,
-        "index.html",
-        {
-            "max_upload_mb": MAX_UPLOAD_BYTES // (1024 * 1024),
-            "languages": languages,
-            "default_lang": registry.default,
-        },
-    )
 
 
 @app.get("/health")
@@ -141,5 +121,5 @@ def _is_pdf_upload(data: bytes, content_type: str, filename: str) -> bool:
     named_pdf = filename.lower().endswith(".pdf")
     if content_type in PDF_TYPES:
         return True
-    # A dropped file often arrives as octet-stream; trust a .pdf name in that case.
+    # Clients often send octet-stream; trust a .pdf name in that case.
     return named_pdf and content_type in NEUTRAL_TYPES

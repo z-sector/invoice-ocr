@@ -1,7 +1,7 @@
 [project]
 name = "invoice-ocr"
 version = "1.0.0"
-description = "FastAPI app that extracts invoice payment fields from a photo or PDF with PaddleOCR on CPU"
+description = "FastAPI service (API only) that extracts invoice payment fields from a photo or PDF with PaddleOCR on CPU"
 readme = "README.md"
 # Upper bound: PaddlePaddle 3.2 ships wheels up to CPython 3.13.
 requires-python = ">=3.11,<3.14"
@@ -12,7 +12,6 @@ dependencies = [
     "fastapi==0.162.4",
     "uvicorn[standard]==0.54.0",
     "python-multipart==0.0.33",
-    "jinja2==3.1.6",
     "pillow==12.1.0",
     "numpy>=1.26,<3",
     # Renders PDF pages to images. Already pulled in by PaddleOCR; pinned here because the app calls it directly.

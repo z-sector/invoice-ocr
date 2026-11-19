@@ -16,20 +16,25 @@ from dataclasses import dataclass, replace
 import numpy as np
 from PIL import Image, ImageOps, UnidentifiedImageError
 
+from .config import (
+    MAX_IMAGE_SIDE,
+    MAX_PDF_PAGES,
+    OCR_DEVICE,
+    OCR_LANG,
+    PDF_RENDER_DPI,
+    USE_DOC_ORIENTATION_CLASSIFY,
+    USE_DOC_UNWARPING,
+    USE_TEXTLINE_ORIENTATION,
+)
+
 # Avoid a slow network probe on every start; models are cached after the first download.
 os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
 
 logger = logging.getLogger(__name__)
 
-MAX_IMAGE_SIDE = int(os.environ.get("OCR_MAX_IMAGE_SIDE", "2200"))
-PDF_RENDER_DPI = int(os.environ.get("OCR_PDF_DPI", "170"))
-MAX_PDF_PAGES = int(os.environ.get("OCR_MAX_PDF_PAGES", "10"))
 # Keeps the last line of one page from merging with the first line of the next.
 PAGE_GAP_PX = 48
 PDF_TYPES = {"application/pdf", "application/x-pdf"}
-OCR_LANG = os.environ.get("OCR_LANG", "en")
-# Languages the API accepts. Each one loads its own recognition model on first use.
-OCR_LANGS = tuple(code.strip() for code in os.environ.get("OCR_LANGS", "en,ru").split(",") if code.strip())
 
 
 class DocumentDecodeError(ValueError):
@@ -71,16 +76,11 @@ class OcrResult:
 
 
 class OcrEngine:
-    """Lazily loads PaddleOCR on CPU and serialises inference calls (the predictor is not thread-safe)."""
+    """Lazily loads the English PaddleOCR model and serialises inference calls (the predictor is not thread-safe)."""
 
-    def __init__(self, lang: str = OCR_LANG) -> None:
-        self._lang = lang
+    def __init__(self) -> None:
         self._ocr = None
         self._lock = threading.Lock()
-
-    @property
-    def lang(self) -> str:
-        return self._lang
 
     @property
     def is_ready(self) -> bool:
@@ -95,13 +95,13 @@ class OcrEngine:
             from paddleocr import PaddleOCR
 
             started = time.perf_counter()
-            logger.info("Loading PaddleOCR (lang=%s, device=cpu)...", self._lang)
+            logger.info("Loading PaddleOCR (lang=%s, device=%s)...", OCR_LANG, OCR_DEVICE)
             self._ocr = PaddleOCR(
-                lang=self._lang,
-                device="cpu",
-                use_doc_orientation_classify=False,
-                use_doc_unwarping=False,
-                use_textline_orientation=True,
+                lang=OCR_LANG,
+                device=OCR_DEVICE,
+                use_doc_orientation_classify=USE_DOC_ORIENTATION_CLASSIFY,
+                use_doc_unwarping=USE_DOC_UNWARPING,
+                use_textline_orientation=USE_TEXTLINE_ORIENTATION,
             )
             logger.info("PaddleOCR ready in %.1fs", time.perf_counter() - started)
 
@@ -137,29 +137,6 @@ class OcrEngine:
             page_count=len(images),
             pages_in_file=pages_in_file,
         )
-
-
-class EngineRegistry:
-    """One OcrEngine per language, created on demand."""
-
-    def __init__(self, langs: tuple[str, ...] = OCR_LANGS, default: str = OCR_LANG) -> None:
-        self.langs = tuple(dict.fromkeys((default, *langs)))
-        self.default = default
-        self._engines: dict[str, OcrEngine] = {}
-        self._lock = threading.Lock()
-
-    def get(self, lang: str | None) -> OcrEngine:
-        lang = (lang or self.default).strip().lower()
-        if lang not in self.langs:
-            raise KeyError(lang)
-        with self._lock:
-            engine = self._engines.get(lang)
-            if engine is None:
-                engine = self._engines[lang] = OcrEngine(lang)
-        return engine
-
-    def loaded(self) -> list[str]:
-        return [lang for lang, engine in self._engines.items() if engine.is_ready]
 
 
 def pdf_magic(data: bytes) -> bool:

@@ -3,33 +3,31 @@
 from __future__ import annotations
 
 import logging
-import os
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
-from .ocr import PDF_TYPES, DocumentDecodeError, EngineRegistry, pdf_magic
+from .config import MAX_UPLOAD_MB, OCR_DEVICE, OCR_LANG, PRELOAD_MODEL
+from .ocr import PDF_TYPES, DocumentDecodeError, OcrEngine, pdf_magic
 from .parser import parse_invoice
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("invoice_ocr")
 
-MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_MB", "15")) * 1024 * 1024
+MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/bmp", "image/tiff", "image/gif"}
 NEUTRAL_TYPES = {"", "application/octet-stream", "binary/octet-stream"}
-PRELOAD_MODELS = os.environ.get("OCR_PRELOAD", "1") != "0"
 
-registry = EngineRegistry()
+engine = OcrEngine()
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    if PRELOAD_MODELS:
-        # Warm up the default language at startup so the first upload does not wait for model loading.
-        await run_in_threadpool(registry.get(registry.default).load)
+    if PRELOAD_MODEL:
+        await run_in_threadpool(engine.load)
     yield
 
 
@@ -45,20 +43,14 @@ app = FastAPI(
 async def health() -> dict:
     return {
         "status": "ok",
-        "device": "cpu",
-        "languages": list(registry.langs),
-        "default_lang": registry.default,
-        "loaded": registry.loaded(),
+        "device": OCR_DEVICE,
+        "lang": OCR_LANG,
+        "model_loaded": engine.is_ready,
     }
 
 
 @app.post("/api/parse")
-async def parse(file: UploadFile = File(...), lang: str | None = Form(default=None)) -> JSONResponse:
-    try:
-        engine = registry.get(lang)
-    except KeyError:
-        raise HTTPException(status_code=422, detail=f"Unsupported language '{lang}'. Available: {', '.join(registry.langs)}.")
-
+async def parse(file: UploadFile = File(...)) -> JSONResponse:
     content_type = (file.content_type or "").split(";")[0].strip().lower()
     filename = file.filename or ""
 
@@ -66,7 +58,7 @@ async def parse(file: UploadFile = File(...), lang: str | None = Form(default=No
     if not data:
         raise HTTPException(status_code=400, detail="The uploaded file is empty.")
     if len(data) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail=f"File is too large. The limit is {MAX_UPLOAD_BYTES // (1024 * 1024)} MB.")
+        raise HTTPException(status_code=413, detail=f"File is too large. The limit is {MAX_UPLOAD_MB} MB.")
 
     as_pdf = _is_pdf_upload(data, content_type, filename)
     if not as_pdf and content_type not in IMAGE_TYPES and content_type not in NEUTRAL_TYPES:
@@ -103,7 +95,7 @@ async def parse(file: UploadFile = File(...), lang: str | None = Form(default=No
                 "pages_in_file": ocr_result.pages_in_file,
                 "ocr_ms": ocr_result.duration_ms,
                 "total_ms": total_ms,
-                "engine": f"PaddleOCR (CPU, lang={engine.lang})",
+                "engine": f"PaddleOCR ({OCR_DEVICE.upper()}, lang={OCR_LANG})",
             },
             "file": {
                 "name": file.filename,

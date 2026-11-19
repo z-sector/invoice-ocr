@@ -44,20 +44,19 @@ RUN useradd --create-home --uid 1000 app \
 WORKDIR /app
 
 COPY --from=builder /opt/venv /opt/venv
-COPY app ./app
 
 USER app
 
-# Comma-separated languages whose models are downloaded into the image (e.g. "en,ru").
-# Empty: models are downloaded on first start into PADDLE_PDX_CACHE_HOME (mount a volume there to keep them).
-ARG MODEL_LANGS=""
-RUN for lang in $(echo "$MODEL_LANGS" | tr ',' ' '); do \
-        python -c "import sys; from app.ocr import OcrEngine; OcrEngine(sys.argv[1]).load()" "$lang" || exit 1; \
-    done
+# Download the models into the image, so the container starts without network access or a volume.
+# Only the modules that select the models are copied first: other code changes do not repeat the download.
+COPY app/__init__.py app/config.py app/ocr.py ./app/
+RUN python -c "from app.ocr import OcrEngine; OcrEngine().load()"
+
+COPY app ./app
 
 EXPOSE 8741
 
-# The server only starts listening once the default model is loaded, so "healthy" also means "ready".
+# The server only starts listening once the model is loaded, so "healthy" also means "ready".
 HEALTHCHECK --interval=30s --timeout=5s --start-period=180s --retries=3 \
     CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8741/health', timeout=3)"]
 

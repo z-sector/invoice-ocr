@@ -1,7 +1,7 @@
 # Invoice OCR API (FastAPI + PaddleOCR, CPU)
 
 An HTTP API that extracts payment fields from an invoice. Upload a photo or a PDF, PaddleOCR (PaddlePaddle, CPU only)
-recognizes the text, and a rule-based parser returns the fields as JSON:
+recognizes the text with its English model, and a rule-based parser returns the fields as JSON:
 
 ```json
 {
@@ -22,13 +22,13 @@ The service is API only: there is no web UI. The fields correspond to the `Parse
 Requirements: Docker, GNU Make, curl.
 
 ```bash
-make up                              # build the image and start the container on port 8741
-make wait                            # block until the service is ready
-make parse FILE=path/to/invoice.pdf  # send a document, print the JSON response
+make up                                  # build the image and start the container on port 8741
+make wait                                # block until the service is ready
+make parse FILE=example/invoice-usd.png  # send a sample invoice, print the JSON response
 ```
 
-On the first start the container downloads the OCR models (about 140 MB for English) from Hugging Face into the
-`invoice-ocr-models` Docker volume; later starts reuse them and take a few seconds.
+The OCR models (about 140 MB) are downloaded from Hugging Face while the image is built and stored in it, so the
+container starts in a few seconds and needs no network access.
 
 ## Makefile
 
@@ -36,7 +36,7 @@ Run `make` (or `make help`) to list the targets.
 
 | Target | What it does |
 | --- | --- |
-| `make build` | Build the image `invoice-ocr:latest` |
+| `make build` | Build the image `invoice-ocr:latest`, downloading the OCR models into it |
 | `make rebuild` | Build without the layer cache, pulling fresh base images |
 | `make run` | (Re)start the container in the background from the built image |
 | `make up` | `build`, then `run` |
@@ -46,10 +46,9 @@ Run `make` (or `make help`) to list the targets.
 | `make status` | Show the container state and health |
 | `make shell` | Open a shell inside the running container |
 | `make clean` | Remove the container and the image |
-| `make clean-models` | Remove the container and the volume with downloaded models |
 | `make health` | `GET /health` |
 | `make wait` | Block until `/health` answers (fails after `WAIT_TIMEOUT` seconds) |
-| `make parse FILE=... [DOC_LANG=ru]` | `POST /api/parse` with the given file |
+| `make parse FILE=...` | `POST /api/parse` with the given file |
 | `make install` | Local development: create `.venv` from `uv.lock` |
 | `make dev` | Local development: run the API with auto-reload |
 | `make lock` | Local development: re-resolve `uv.lock` after editing `pyproject.toml` |
@@ -61,14 +60,11 @@ Variables, passed as `make <target> NAME=value`:
 | `PORT` | `8741` | Host port (`run`, `up`, `dev`) and the port the API targets call |
 | `IMAGE`, `TAG` | `invoice-ocr`, `latest` | Image name and tag |
 | `CONTAINER` | `invoice-ocr` | Container name |
-| `MODELS_VOLUME` | `invoice-ocr-models` | Docker volume that keeps downloaded models |
-| `MODEL_LANGS` | empty | Languages whose models are baked into the image at build time, e.g. `en,ru` |
-| `ENV_FILE` | `.env` | File with service settings, passed to the container when it exists |
 | `URL` | `http://localhost:$(PORT)` | Base URL used by `health`, `wait` and `parse` |
 | `WAIT_TIMEOUT` | `300` | Seconds `make wait` keeps trying |
 | `DOCKER` | `docker` | Container CLI |
 
-`make run` does not rebuild: after changing the code run `make up`.
+`make run` does not rebuild: after changing the code or `app/config.py` run `make up`.
 
 ## API
 
@@ -80,12 +76,12 @@ Recognizes a document and returns the extracted fields. The request is `multipar
 
 | Field | Required | Description |
 | --- | --- | --- |
-| `file` | yes | The invoice: an image (JPG, PNG, WEBP, BMP, TIFF, GIF) or a PDF, up to `MAX_UPLOAD_MB` (15 MB by default) |
-| `lang` | no | Document language, one of `OCR_LANGS`. Defaults to `OCR_LANG` (`en`). The `ru` model also reads Latin text |
+| `file` | yes | The invoice: an image (JPG, PNG, WEBP, BMP, TIFF, GIF) or a PDF, up to 15 MB (`MAX_UPLOAD_MB` in `app/config.py`) |
+
+The document is recognized with the English model; there is no language parameter.
 
 ```bash
-curl -s -F "file=@invoice.jpg" -F "lang=en" http://localhost:8741/api/parse
-curl -s -F "file=@invoice.pdf" http://localhost:8741/api/parse
+curl -s -F "file=@example/invoice-usd.png" http://localhost:8741/api/parse
 ```
 
 Response `200 OK`:
@@ -103,27 +99,29 @@ Response `200 OK`:
   },
   "sources": {
     "vendor_name": "Blue Ridge Supply Co. INVOICE",
-    "invoice_number": "Invoice No: 2026-1142",
+    "invoice_number": "Invoice No: 2026-1142 Northwind Traders LLC",
     "amount": "Amount Due: $2,290.50",
     "currency": "Amount Due: $2,290.50",
-    "bank_name_on_invoice": "Bank: Wells Fargo Bank, N.A.",
+    "bank_name_on_invoice": "Bank Name: Wells Fargo Bank, N.A.",
     "account_number_on_invoice": "Account Number: 4000123456789",
     "routing_on_invoice": "Routing Number: 121000248"
   },
   "ocr": {
-    "lines": ["Blue Ridge Supply Co. INVOICE", "Invoice No: 2026-1142", "..."],
-    "line_count": 16,
+    "lines": ["Blue Ridge Supply Co. INVOICE", "412 Harbor Street, Asheville, NC 28801", "..."],
+    "line_count": 19,
     "mean_confidence": 0.998,
-    "image_size": [1240, 1500],
+    "image_size": [1240, 1754],
     "page_count": 1,
     "pages_in_file": 1,
-    "ocr_ms": 2615,
-    "total_ms": 2633,
+    "ocr_ms": 3494,
+    "total_ms": 3510,
     "engine": "PaddleOCR (CPU, lang=en)"
   },
-  "file": { "name": "invoice.png", "size": 82511, "content_type": "image/png", "kind": "image" }
+  "file": { "name": "invoice-usd.png", "size": 105589, "content_type": "image/png", "kind": "image" }
 }
 ```
+
+The response is shortened here: `ocr.lines` has 19 entries.
 
 | Key | Description |
 | --- | --- |
@@ -132,7 +130,7 @@ Response `200 OK`:
 | `ocr.lines` | The recognized text, grouped into rows from top to bottom |
 | `ocr.mean_confidence` | Average recognition confidence of the text boxes, from 0 to 1 |
 | `ocr.image_size` | Width and height in pixels of the recognized image; PDF pages are stacked vertically |
-| `ocr.page_count`, `ocr.pages_in_file` | Pages that were recognized and pages in the file (a PDF is cut at `OCR_MAX_PDF_PAGES`) |
+| `ocr.page_count`, `ocr.pages_in_file` | Pages that were recognized and pages in the file (a PDF is cut at `MAX_PDF_PAGES`) |
 | `ocr.ocr_ms`, `ocr.total_ms` | Recognition time and total processing time, in milliseconds |
 | `file.kind` | `image` or `pdf` |
 
@@ -143,57 +141,126 @@ Errors are returned as `{"detail": "..."}`:
 | `400` | The file is empty, is not a readable image, or the PDF is damaged, password-protected or has no pages |
 | `413` | The file is larger than `MAX_UPLOAD_MB` |
 | `415` | The content type is neither an image nor a PDF |
-| `422` | `lang` is not one of `OCR_LANGS`, or the `file` field is missing |
+| `422` | The `file` field is missing |
 | `500` | Text recognition failed |
 
-Recognition takes 2–20 seconds per page on a CPU. Requests for the same language are processed one at a time.
+Recognition takes 2–20 seconds per page on a CPU. Requests are processed one at a time.
 
 ### `GET /health`
 
 ```json
-{ "status": "ok", "device": "cpu", "languages": ["en", "ru"], "default_lang": "en", "loaded": ["en"] }
+{ "status": "ok", "device": "cpu", "lang": "en", "model_loaded": true }
 ```
 
-`languages` are the accepted values of `lang`; `loaded` lists the languages whose models are already in memory.
-With `OCR_PRELOAD=1` the server starts listening only after the default model is loaded, so a response also means the
-service is ready.
+`lang` is the language of the model; `model_loaded` tells whether it is already in memory. With `PRELOAD_MODEL = True`
+the server starts listening only after the model is loaded, so a response also means the service is ready.
+
+## Examples
+
+The `example/` directory contains sample invoices for trying the API. They are synthetic: the companies, amounts and
+account numbers are made up. The directory is not copied into the Docker image.
+
+| File | What it shows |
+| --- | --- |
+| `example/invoice-usd.png` | A clean single-page image with US bank details: account and routing number |
+| `example/invoice-eur.pdf` | A two-page PDF: the amount is on page 1, the bank details (IBAN, SWIFT/BIC) on page 2 |
+| `example/invoice-gbp.jpg` | A photo of a printed page, slightly tilted, with UK bank details: account number and sort code |
+
+Run the commands from the repository root while the service listens on port 8741. Each response has the shape
+described under [`POST /api/parse`](#post-apiparse); only its `invoice` object is shown here.
+
+```bash
+curl -s -F "file=@example/invoice-usd.png" http://localhost:8741/api/parse
+```
+
+```json
+{
+  "vendor_name": "Blue Ridge Supply Co.",
+  "invoice_number": "2026-1142",
+  "amount": "2290.50",
+  "currency": "USD",
+  "bank_name_on_invoice": "Wells Fargo Bank, N.A.",
+  "account_number_on_invoice": "4000123456789",
+  "routing_on_invoice": "121000248"
+}
+```
+
+```bash
+curl -s -F "file=@example/invoice-eur.pdf" http://localhost:8741/api/parse
+```
+
+```json
+{
+  "vendor_name": "Nordlicht Software GmbH",
+  "invoice_number": "RE-2026-0387",
+  "amount": "4819.50",
+  "currency": "EUR",
+  "bank_name_on_invoice": "Deutsche Bank AG",
+  "account_number_on_invoice": "DE89370400440532013000",
+  "routing_on_invoice": "DEUTDEFF"
+}
+```
+
+Both pages are recognized, so `ocr.page_count` and `ocr.pages_in_file` are `2`.
+
+```bash
+curl -s -F "file=@example/invoice-gbp.jpg" http://localhost:8741/api/parse
+```
+
+```json
+{
+  "vendor_name": "Harbour & Finch Ltd",
+  "invoice_number": "HF-00921",
+  "amount": "1281.60",
+  "currency": "GBP",
+  "bank_name_on_invoice": "Barclays Bank PLC",
+  "account_number_on_invoice": "20457731",
+  "routing_on_invoice": "20-32-06"
+}
+```
+
+To print only the `invoice` object, pipe the response through `jq`:
+
+```bash
+curl -s -F "file=@example/invoice-usd.png" http://localhost:8741/api/parse | jq .invoice
+```
 
 ## Configuration
 
-The service is configured with environment variables:
+The service reads no settings from environment variables: all of them are constants in `app/config.py`. To change
+one, edit the file and rebuild the image (`make up`) or restart the local server.
 
-| Variable | Default | Purpose |
+| Constant | Value | Purpose |
 | --- | --- | --- |
-| `OCR_LANG` | `en` | Default language; its model is loaded at startup |
-| `OCR_LANGS` | `en,ru` | Languages accepted in `lang`; each model is loaded on first use |
-| `OCR_PRELOAD` | `1` | `0` loads the default model on the first request instead of at startup |
-| `OCR_MAX_IMAGE_SIDE` | `2200` | Larger images and PDF pages are downscaled to this size on the longest side |
-| `OCR_PDF_DPI` | `170` | Resolution used to rasterize PDF pages |
-| `OCR_MAX_PDF_PAGES` | `10` | Number of leading PDF pages to recognize; the rest are skipped |
-| `MAX_UPLOAD_MB` | `15` | Upload size limit |
-
-For Docker, copy `.env.example` to `.env` and edit it; `make run` passes the file to the container. For a local run,
-export the variables before `make dev`.
+| `OCR_LANG` | `"en"` | Language of the model. The service is built for English only |
+| `OCR_DEVICE` | `"cpu"` | Device PaddleOCR runs on |
+| `USE_DOC_ORIENTATION_CLASSIFY` | `False` | Detect the rotation of the whole document (a separate model) |
+| `USE_DOC_UNWARPING` | `False` | Flatten curved pages (a separate model) |
+| `USE_TEXTLINE_ORIENTATION` | `True` | Detect the orientation of individual text lines |
+| `PRELOAD_MODEL` | `True` | Load the model at startup; `False` loads it on the first request |
+| `MAX_UPLOAD_MB` | `15` | Upload size limit; a larger file is rejected with `413` |
+| `MAX_IMAGE_SIDE` | `2200` | Larger images and PDF pages are downscaled to this size on the longest side |
+| `PDF_RENDER_DPI` | `170` | Resolution used to rasterize PDF pages |
+| `MAX_PDF_PAGES` | `10` | Number of leading PDF pages to recognize; the rest are skipped |
 
 ## Docker image
 
 The `Dockerfile` is a two-stage build on `python:3.12-slim-bookworm`: the first stage installs the locked dependencies
 with uv into a virtualenv, the second one copies the virtualenv and `app/` and runs uvicorn on port 8741 as the
-non-root user `app`. The image is about 1.7 GB unpacked (520 MB compressed), most of it PaddlePaddle. It has a
-`HEALTHCHECK` that calls `/health`.
+non-root user `app`. The image is about 1.8 GB unpacked (630 MB compressed), most of it PaddlePaddle; the
+models take 140 MB. It has a `HEALTHCHECK` that calls `/health`.
 
-Models are stored in `/home/app/.paddlex`. There are two ways to provide them:
+The models are downloaded at build time into `/home/app/.paddlex` inside the image, so the build needs internet
+access and the container does not: it starts without network access and without a volume.
 
-- A volume (the default of `make run`): models are downloaded on first use and kept in the `invoice-ocr-models` volume.
-  The container needs internet access the first time a language is used.
-- Baked into the image: `make up MODEL_LANGS=en,ru` downloads the models at build time. The container then starts
-  without network access and without a volume. Each language adds roughly 90–140 MB.
+`.dockerignore` is an allow-list, so only `app/`, `pyproject.toml` and `uv.lock` reach the build; `example/` and
+everything else in the repository stay out of the image.
 
 The same without Make:
 
 ```bash
 docker build -t invoice-ocr .
-docker run -d --name invoice-ocr -p 8741:8741 -v invoice-ocr-models:/home/app/.paddlex invoice-ocr
+docker run -d --name invoice-ocr -p 8741:8741 invoice-ocr
 ```
 
 ## Local development
@@ -214,11 +281,12 @@ Models are cached in `~/.paddlex/official_models/`. Add a dependency with `uv ad
 
 ```
 app/main.py      FastAPI application: endpoints, upload validation
+app/config.py    Service settings (constants)
 app/ocr.py       PaddleOCR wrapper, image decoding, PDF rasterization
 app/parser.py    Rule-based field extraction
+example/         Sample invoices for trying the API (not part of the image)
 Dockerfile       Container image
 Makefile         Build, run and maintenance commands
-.env.example     Service settings template
 pyproject.toml   Dependencies (locked in uv.lock)
 ```
 
@@ -226,7 +294,7 @@ pyproject.toml   Dependencies (locked in uv.lock)
 
 `app/ocr.py` runs PaddleOCR (`device="cpu"`: text detection, text line orientation classification, recognition) and
 returns text boxes with coordinates. A PDF is first rasterized with `pypdfium2`, page by page up to
-`OCR_MAX_PDF_PAGES`; the coordinates of later pages are shifted down, so the document is parsed as one page.
+`MAX_PDF_PAGES`; the coordinates of later pages are shifted down, so the document is parsed as one page.
 `app/parser.py` groups the boxes into rows by vertical position and then applies rules:
 
 - `invoice_number`: labels such as `Invoice No / # / № / N°`, `Счет на оплату №`, `Facture N°`.

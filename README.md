@@ -38,7 +38,7 @@ Run `make` (or `make help`) to list the targets.
 | --- | --- |
 | `make build` | Build the image `invoice-ocr:latest`, downloading the OCR models into it |
 | `make rebuild` | Build without the layer cache, pulling fresh base images |
-| `make run` | (Re)start the container in the background; the parse cache is kept in a volume |
+| `make run` | (Re)start the container in the background from the built image |
 | `make up` | `build`, then `run` |
 | `make stop` | Stop and remove the container |
 | `make restart` | `stop`, then `run` |
@@ -65,7 +65,6 @@ Variables, passed as `make <target> NAME=value`:
 | `WAIT_TIMEOUT` | `300` | Seconds `make wait` keeps trying |
 | `DOCKER` | `docker` | Container CLI |
 | `PARSE_CACHE_TTL_HOURS` | `24` | Cache lifetime in hours, passed into the container by `run` |
-| `CACHE_VOLUME` | `$(CONTAINER)-cache` | Docker volume mounted on the cache directory |
 
 `make run` does not rebuild: after changing the code or `app/config.py` run `make up`.
 
@@ -238,27 +237,24 @@ curl -s -F "file=@example/invoice-usd.png" http://localhost:8741/api/parse | jq 
 Recognition and upload limits are constants in `app/config.py`. To change one, edit the file and rebuild the image
 (`make up`) or restart the local server.
 
-The parse cache is configured with environment variables. The lifetime is measured in hours. When
+The parse cache keeps successful results in the process memory. The lifetime is measured in hours. When
 `PARSE_CACHE_TTL_HOURS` is unset or empty, an entry lasts 24 hours (one day). `0` turns the cache off. A fractional
 value is allowed: `1.5` and `1,5` are both an hour and a half. `make restart` passes `PARSE_CACHE_TTL_HOURS` into
-the container, so a new lifetime takes effect without a rebuild. The constants in `app/config.py` still need one.
+the container and starts a new process, so the cache is empty and the new lifetime applies. The constants in
+`app/config.py` still need a rebuild.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `PARSE_CACHE_TTL_HOURS` | `24` | How long a cached parse is reused, in hours. `0` disables the cache |
-| `PARSE_CACHE_DIR` | `~/.cache/invoice-ocr` | Directory of the on-disk cache. The Docker image sets `/home/app/.cache/invoice-ocr` |
 
-`make run` stores that directory in the Docker volume `invoice-ocr-cache` (override with `CACHE_VOLUME`), so the cache
-survives `make restart`. Delete it with `docker volume rm invoice-ocr-cache` after `make stop`. Local `make dev`
-inherits the variables from the shell and, when `PARSE_CACHE_DIR` is unset, writes to `~/.cache/invoice-ocr`.
+Local `make dev` inherits the variable from the shell. A restart of the process drops every entry.
 
 The cache key is the SHA-256 of the uploaded bytes. The same file uploaded again, under any name, reuses the stored
-fields until the lifetime runs out. A change to the parser, the OCR code, or the recognition settings invalidates
-old entries. Only successful parses are stored.
+fields until the lifetime runs out. Only successful parses are stored.
 
-The request deletes its own file as soon as that file is older than the lifetime. Other expired files are removed
-after the response, by a FastAPI background task, at most once a minute. The process also sweeps the directory once
-at startup. Until one of those runs, an expired file that nobody asks for stays on disk.
+The request drops its own entry as soon as that entry is older than the lifetime. Other expired entries are removed
+after the response, by a FastAPI background task, at most once a minute. The process also sweeps once at startup.
+Until one of those runs, an expired entry that nobody asks for stays in memory.
 
 | Constant | Value | Purpose |
 | --- | --- | --- |
@@ -292,7 +288,6 @@ The same without Make:
 docker build -t invoice-ocr .
 docker run -d --name invoice-ocr -p 8741:8741 \
   -e PARSE_CACHE_TTL_HOURS=24 \
-  -v invoice-ocr-cache:/home/app/.cache/invoice-ocr \
   invoice-ocr
 ```
 
@@ -316,7 +311,7 @@ Models are cached in `~/.paddlex/official_models/`. Add a dependency with `uv ad
 ```
 app/main.py      FastAPI application: endpoints, upload validation, cache lookup
 app/config.py    Service settings (constants, plus the cache environment variables)
-app/cache.py     Local parse cache. Lifetime is in hours, default 24
+app/cache.py     In-memory parse cache. Lifetime is in hours, default 24
 app/ocr.py       PaddleOCR wrapper, image decoding, PDF rasterization
 app/parser.py    Rule-based field extraction
 tests/           Unit tests
@@ -328,7 +323,7 @@ pyproject.toml   Dependencies (locked in uv.lock)
 
 ## How parsing works
 
-`POST /api/parse` hashes the upload. When that hash is already in the local cache and younger than
+`POST /api/parse` hashes the upload. When that hash is already in the in-memory cache and younger than
 `PARSE_CACHE_TTL_HOURS`, the stored fields are returned and OCR does not run. Otherwise `app/ocr.py` runs PaddleOCR
 (`device="cpu"`: text detection, text line orientation classification, recognition) and returns text boxes with
 coordinates. A PDF is first rasterized with `pypdfium2`, page by page up to

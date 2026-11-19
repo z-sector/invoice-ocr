@@ -3,16 +3,15 @@
 Recognition and upload limits below are plain constants: edit this file to change them.
 The Docker image contains this file and the models it selects, so a constant takes effect after a rebuild (`make up`).
 
-The parse cache is the exception. Its lifetime and directory come from the environment
-(`PARSE_CACHE_TTL_HOURS`, in hours, default 24; `PARSE_CACHE_DIR`). A restart is enough
-for those two; the constants still need a rebuild.
+The parse cache is the exception. Its lifetime comes from PARSE_CACHE_TTL_HOURS
+(hours, default 24). Entries live in process memory, so a restart clears them and
+applies a new lifetime. The constants still need a rebuild.
 """
 
 from __future__ import annotations
 
 import math
 import os
-from pathlib import Path
 
 # --- Model -------------------------------------------------------------------
 
@@ -69,15 +68,6 @@ def display_ttl_hours(value: float) -> int | float:
     if number.is_integer():
         return int(number)
     return number
-
-
-def parse_cache_directory(raw: str | None = None) -> Path:
-    """Directory of the on-disk parse cache. Unset means ~/.cache/invoice-ocr."""
-    if raw is None:
-        raw = os.environ.get("PARSE_CACHE_DIR")
-    if raw is None or raw.strip() == "":
-        return Path.home() / ".cache" / "invoice-ocr"
-    return Path(raw.strip()).expanduser()
 
 
 def _ttl_hours_error(raw: object) -> str:

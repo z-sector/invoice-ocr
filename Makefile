@@ -7,8 +7,6 @@ URL           ?= http://localhost:$(PORT)
 WAIT_TIMEOUT  ?= 300
 # Cache lifetime passed into the container, in hours. Empty in the app means 24 (one day).
 PARSE_CACHE_TTL_HOURS ?= 24
-# Survives `make restart`. Removed only by `docker volume rm`.
-CACHE_VOLUME  ?= $(CONTAINER)-cache
 # `make parse` argument
 FILE          ?=
 
@@ -32,13 +30,12 @@ rebuild: ## Build the image without the layer cache
 	$(DOCKER) build --no-cache --pull -t $(IMAGE_REF) .
 
 .PHONY: run
-run: ## (Re)start the container; keep the parse cache in a volume
+run: ## (Re)start the container in the background from the built image
 	@$(DOCKER) image inspect $(IMAGE_REF) >/dev/null 2>&1 || { echo "Image $(IMAGE_REF) not found - run 'make build' first (or 'make up')." >&2; exit 1; }
 	@$(DOCKER) stop $(CONTAINER) >/dev/null 2>&1; $(DOCKER) rm $(CONTAINER) >/dev/null 2>&1 || true
 	$(DOCKER) run -d --name $(CONTAINER) --restart unless-stopped \
 		-p $(PORT):$(CONTAINER_PORT) \
 		-e PARSE_CACHE_TTL_HOURS="$(PARSE_CACHE_TTL_HOURS)" \
-		-v $(CACHE_VOLUME):/home/app/.cache/invoice-ocr \
 		$(IMAGE_REF)
 	@echo "Starting on $(URL) - run 'make wait' to block until it is ready, 'make logs' to follow the output."
 

@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import sys
-import tempfile
 import threading
 import unittest
 from pathlib import Path
@@ -16,11 +14,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.cache import CACHE_SCHEMA, ParseCache, content_key, settings_fingerprint
+from app.cache import ParseCache, content_key
 from app.config import (
     DEFAULT_PARSE_CACHE_TTL_HOURS,
     display_ttl_hours,
-    parse_cache_directory,
     parse_cache_ttl_hours,
 )
 from app.ocr import OcrResult, TextSegment
@@ -51,60 +48,26 @@ class TtlHoursTests(unittest.TestCase):
                     parse_cache_ttl_hours(raw)
                 self.assertIn("PARSE_CACHE_TTL_HOURS", str(caught.exception))
 
-    def test_directory_default_and_override(self) -> None:
-        with mock.patch.dict(os.environ, {"PARSE_CACHE_DIR": ""}, clear=False):
-            with mock.patch("app.config.Path.home", return_value=Path("/tmp/cache-home")):
-                self.assertEqual(parse_cache_directory(None), Path("/tmp/cache-home/.cache/invoice-ocr"))
-                self.assertEqual(parse_cache_directory(""), Path("/tmp/cache-home/.cache/invoice-ocr"))
-        self.assertEqual(parse_cache_directory("  /var/cache/ocr  "), Path("/var/cache/ocr"))
-        self.assertEqual(parse_cache_directory("  ~/invoices  "), Path("~/invoices").expanduser())
-
 
 class ParseCacheTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
         self.now = [1_000_000.0]
-        self.cache = ParseCache(
-            self.tmp.name,
-            ttl_hours=24,
-            fingerprint="test-fingerprint",
-            clock=lambda: self.now[0],
-        )
+        self.cache = ParseCache(ttl_hours=24, clock=lambda: self.now[0])
 
-    def test_round_trip_does_not_create_the_directory_until_a_store(self) -> None:
-        missing = Path(self.tmp.name) / "absent"
-        cache = ParseCache(missing, ttl_hours=24, fingerprint="test-fingerprint", clock=lambda: self.now[0])
-        self.assertFalse(missing.exists())
-        self.assertIsNone(cache.get(content_key(b"missing")))
-        self.assertFalse(missing.exists())
-
-    def test_put_get_and_a_new_instance_see_the_same_entry(self) -> None:
+    def test_put_get_stays_in_this_process_only(self) -> None:
         key = content_key("счёт".encode())
         invoice = {"vendor_name": "ООО Ромашка", "amount": "10.00"}
-        directory = Path(self.tmp.name) / "nested"
-        cache = ParseCache(directory, ttl_hours=24, fingerprint="test-fingerprint", clock=lambda: self.now[0])
-        stored = cache.put(key, invoice=invoice, sources={"amount": "Итого 10"}, ocr={"lines": ["Итого 10"]})
+        stored = self.cache.put(key, invoice=invoice, sources={"amount": "Итого 10"}, ocr={"lines": ["Итого 10"]})
         self.assertTrue(stored)
-        path = directory / f"{key}.json"
-        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
-        self.assertEqual(directory.stat().st_mode & 0o777, 0o700)
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        self.assertEqual(payload["fingerprint"], "test-fingerprint")
-        self.assertNotIn("total_ms", payload["ocr"])
-        self.assertIn("Ромашка", path.read_text(encoding="utf-8"))
-
-        got = cache.get(key)
+        got = self.cache.get(key)
         self.assertIsNotNone(got)
         assert got is not None
         self.assertEqual(got.invoice, invoice)
         self.assertEqual(got.stored_at, 1_000_000.0)
+        self.assertNotIn("total_ms", got.ocr)
 
-        revived = ParseCache(directory, ttl_hours=24, fingerprint="test-fingerprint", clock=lambda: self.now[0])
-        again = revived.get(key)
-        self.assertIsNotNone(again)
-        assert again is not None
-        self.assertEqual(again.invoice, invoice)
+        revived = ParseCache(ttl_hours=24, clock=lambda: self.now[0])
+        self.assertIsNone(revived.get(key))
 
     def test_lifetime_is_absolute_and_expires_after_the_ttl(self) -> None:
         key = content_key(b"invoice")
@@ -114,14 +77,13 @@ class ParseCacheTests(unittest.TestCase):
         self.assertIsNotNone(got)
         assert got is not None
         self.assertEqual(self.cache.age_seconds(got.stored_at), 10)
-        stored_at = json.loads((Path(self.tmp.name) / f"{key}.json").read_text())["stored_at"]
-        self.assertEqual(stored_at, 1_000_000.0)
+        self.assertEqual(self.cache._entries[key].stored_at, 1_000_000.0)
 
         self.now[0] = 1_000_000.0 + 24 * 3600
         self.assertIsNone(self.cache.get(key))
-        self.assertFalse((Path(self.tmp.name) / f"{key}.json").exists())
+        self.assertNotIn(key, self.cache._entries)
 
-    def test_get_does_not_sweep_other_expired_files(self) -> None:
+    def test_get_does_not_sweep_other_expired_entries(self) -> None:
         asked = content_key(b"asked")
         other = content_key(b"other")
         self.cache.put(asked, invoice={"n": "asked"}, sources={}, ocr={})
@@ -129,8 +91,8 @@ class ParseCacheTests(unittest.TestCase):
         self.now[0] += 24 * 3600
         self.cache.put(other, invoice={"n": "fresh"}, sources={}, ocr={})
         self.assertIsNone(self.cache.get(asked))
-        self.assertFalse((Path(self.tmp.name) / f"{asked}.json").exists())
-        self.assertTrue((Path(self.tmp.name) / f"{other}.json").exists())
+        self.assertNotIn(asked, self.cache._entries)
+        self.assertEqual(self.cache.get(other).invoice, {"n": "fresh"})
 
     def test_claim_purge_is_at_most_once_a_minute(self) -> None:
         self.assertTrue(self.cache.claim_purge())
@@ -139,39 +101,25 @@ class ParseCacheTests(unittest.TestCase):
         self.assertFalse(self.cache.claim_purge())
         self.now[0] += 1
         self.assertTrue(self.cache.claim_purge())
-        disabled = ParseCache(Path(self.tmp.name) / "off", ttl_hours=0, fingerprint="x")
+        disabled = ParseCache(ttl_hours=0)
         self.assertFalse(disabled.claim_purge())
 
     def test_zero_ttl_disables_the_cache(self) -> None:
-        cache = ParseCache(Path(self.tmp.name) / "off", ttl_hours=0, fingerprint="test-fingerprint")
+        cache = ParseCache(ttl_hours=0)
         key = content_key(b"invoice")
         self.assertFalse(cache.enabled)
         self.assertFalse(cache.put(key, invoice={}, sources={}, ocr={}))
         self.assertIsNone(cache.get(key))
-        self.assertFalse((Path(self.tmp.name) / "off").exists())
+        self.assertEqual(cache._entries, {})
 
     def test_one_hour_boundary(self) -> None:
-        cache = ParseCache(self.tmp.name, ttl_hours=1, fingerprint="test-fingerprint", clock=lambda: self.now[0])
+        cache = ParseCache(ttl_hours=1, clock=lambda: self.now[0])
         key = content_key(b"hour")
         cache.put(key, invoice={"n": "1"}, sources={}, ocr={})
         self.now[0] += 3599
         self.assertIsNotNone(cache.get(key))
         self.now[0] += 1
         self.assertIsNone(cache.get(key))
-
-    def test_other_fingerprint_is_a_miss_and_drops_the_file(self) -> None:
-        key = content_key(b"invoice")
-        self.cache.put(key, invoice={"n": "1"}, sources={}, ocr={})
-        other = ParseCache(self.tmp.name, ttl_hours=24, fingerprint="other", clock=lambda: self.now[0])
-        self.assertIsNone(other.get(key))
-        self.assertFalse((Path(self.tmp.name) / f"{key}.json").exists())
-
-    def test_corrupt_entry_is_a_miss_and_removed(self) -> None:
-        key = content_key(b"invoice")
-        path = Path(self.tmp.name) / f"{key}.json"
-        path.write_text("{", encoding="utf-8")
-        self.assertIsNone(self.cache.get(key))
-        self.assertFalse(path.exists())
 
     def test_purge_keeps_a_fresh_entry_and_drops_an_expired_one(self) -> None:
         fresh = content_key(b"fresh")
@@ -195,7 +143,7 @@ class ParseCacheTests(unittest.TestCase):
 
     def test_negative_ttl_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
-            ParseCache(self.tmp.name, ttl_hours=-1, fingerprint="x")
+            ParseCache(ttl_hours=-1)
 
     def test_concurrent_writes(self) -> None:
         errors: list[BaseException] = []
@@ -216,10 +164,6 @@ class ParseCacheTests(unittest.TestCase):
             thread.join()
         self.assertEqual(errors, [])
 
-    def test_settings_fingerprint_is_stable(self) -> None:
-        self.assertEqual(settings_fingerprint(), settings_fingerprint())
-        self.assertEqual(len(settings_fingerprint()), 64)
-
 
 class ProcessEnvironmentTests(unittest.TestCase):
     def test_fresh_process_defaults_to_one_day(self) -> None:
@@ -233,25 +177,16 @@ class ProcessEnvironmentTests(unittest.TestCase):
         )
         self.assertEqual(out.strip(), "24.0")
 
-    def test_server_reads_ttl_and_directory_without_creating_it(self) -> None:
-        directory = Path(self.enterContext(tempfile.TemporaryDirectory())) / "not-created"
+    def test_server_reads_ttl_from_the_environment(self) -> None:
         env = os.environ.copy()
         env["PARSE_CACHE_TTL_HOURS"] = "6"
-        env["PARSE_CACHE_DIR"] = str(directory)
         out = subprocess.check_output(
-            [
-                sys.executable,
-                "-c",
-                "from app.main import cache\n"
-                "print(cache.ttl_hours)\n"
-                "print(cache.directory)\n"
-                "print(int(cache.directory.exists()))",
-            ],
+            [sys.executable, "-c", "from app.main import cache; print(cache.ttl_hours)"],
             cwd=ROOT,
             env=env,
             text=True,
         )
-        self.assertEqual(out.splitlines(), ["6.0", str(directory), "0"])
+        self.assertEqual(out.strip(), "6.0")
 
     def test_server_refuses_a_bad_ttl(self) -> None:
         env = os.environ.copy()
@@ -305,19 +240,12 @@ class ParseApiTests(unittest.TestCase):
 
         self.main = main
         self.TestClient = TestClient
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
         self.now = [1_700_000_000.0]
         self.engine = FakeEngine()
         self.original = (main.engine, main.cache, main.PRELOAD_MODEL)
         main.engine = self.engine
         main.PRELOAD_MODEL = False
-        main.cache = ParseCache(
-            self.tmp.name,
-            ttl_hours=24,
-            fingerprint="api",
-            clock=lambda: self.now[0],
-        )
+        main.cache = ParseCache(ttl_hours=24, clock=lambda: self.now[0])
         self.addCleanup(self._restore)
 
     def _restore(self) -> None:
@@ -359,12 +287,14 @@ class ParseApiTests(unittest.TestCase):
         self.assertGreaterEqual(again["ocr"]["total_ms"], 0)
         self.assertEqual(other.json()["cache"]["hit"], False)
 
-        stored = json.loads((Path(self.tmp.name) / f"{content_key(data)}.json").read_text(encoding="utf-8"))
-        self.assertNotIn("total_ms", stored["ocr"])
-        self.assertNotIn("name", stored)
+        stored = self.main.cache.get(content_key(data))
+        self.assertIsNotNone(stored)
+        assert stored is not None
+        self.assertNotIn("total_ms", stored.ocr)
+        self.assertNotIn("name", stored.invoice)
 
     def test_expired_entry_is_parsed_again(self) -> None:
-        self.main.cache = ParseCache(self.tmp.name, ttl_hours=1, fingerprint="api", clock=lambda: self.now[0])
+        self.main.cache = ParseCache(ttl_hours=1, clock=lambda: self.now[0])
         data = b"invoice-bytes"
         with self.TestClient(self.main.app) as client:
             first = self._post(client, "a.png", data)
@@ -376,7 +306,7 @@ class ParseApiTests(unittest.TestCase):
         self.assertEqual(self.engine.calls, 2)
 
     def test_disabled_cache_parses_every_upload(self) -> None:
-        self.main.cache = ParseCache(Path(self.tmp.name) / "off", ttl_hours=0, fingerprint="api")
+        self.main.cache = ParseCache(ttl_hours=0)
         with self.TestClient(self.main.app) as client:
             self.assertEqual(client.get("/health").json()["cache_ttl_hours"], 0)
             first = self._post(client, "a.png", b"invoice-bytes")
@@ -384,7 +314,7 @@ class ParseApiTests(unittest.TestCase):
         self.assertEqual(first.json()["cache"], {"hit": False, "ttl_hours": 0})
         self.assertEqual(second.json()["cache"], {"hit": False, "ttl_hours": 0})
         self.assertEqual(self.engine.calls, 2)
-        self.assertFalse((Path(self.tmp.name) / "off").exists())
+        self.assertEqual(self.main.cache._entries, {})
 
     def test_failures_are_not_cached(self) -> None:
         with self.TestClient(self.main.app) as client:
@@ -397,36 +327,26 @@ class ParseApiTests(unittest.TestCase):
         self.assertEqual(broken.status_code, 400)
         self.assertEqual(broken_again.status_code, 400)
         self.assertEqual(self.engine.calls, 2)
-        self.assertEqual(list(Path(self.tmp.name).glob("*.json")), [])
+        self.assertEqual(self.main.cache._entries, {})
 
-    def test_background_purge_removes_other_expired_files_after_the_response(self) -> None:
+    def test_background_purge_removes_other_expired_entries_after_the_response(self) -> None:
+        stale_key = content_key(b"old-file")
         with self.TestClient(self.main.app) as client:
-            stale = Path(self.tmp.name) / f"{content_key(b'old-file')}.json"
-            stale.write_text(
-                json.dumps(
-                    {
-                        "schema": CACHE_SCHEMA,
-                        "fingerprint": "api",
-                        "stored_at": self.now[0] - 24 * 3600,
-                        "invoice": {},
-                        "sources": {},
-                        "ocr": {},
-                    }
-                ),
-                encoding="utf-8",
-            )
+            self.now[0] -= 24 * 3600
+            self.main.cache.put(stale_key, invoice={"n": "old"}, sources={}, ocr={})
+            self.now[0] += 24 * 3600
             held = self._post(client, "a.png", b"invoice-bytes")
             self.assertEqual(held.status_code, 200, held.text)
-            self.assertTrue(stale.exists())
+            self.assertIn(stale_key, self.main.cache._entries)
 
             self.now[0] += 60
             swept = self._post(client, "b.png", b"other-bytes")
             self.assertEqual(swept.status_code, 200, swept.text)
-            self.assertFalse(stale.exists())
-            self.assertTrue((Path(self.tmp.name) / f"{content_key(b'other-bytes')}.json").exists())
+            self.assertNotIn(stale_key, self.main.cache._entries)
+            self.assertIsNotNone(self.main.cache.get(content_key(b"other-bytes")))
 
     def test_fractional_ttl_is_reported_as_given(self) -> None:
-        self.main.cache = ParseCache(self.tmp.name, ttl_hours=1.5, fingerprint="api", clock=lambda: self.now[0])
+        self.main.cache = ParseCache(ttl_hours=1.5, clock=lambda: self.now[0])
         with self.TestClient(self.main.app) as client:
             response = self._post(client, "a.png", b"invoice-bytes")
         self.assertEqual(response.json()["cache"]["ttl_hours"], 1.5)

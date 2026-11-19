@@ -17,7 +17,6 @@ from .config import (
     OCR_LANG,
     PRELOAD_MODEL,
     display_ttl_hours,
-    parse_cache_directory,
     parse_cache_ttl_hours,
 )
 from .ocr import PDF_TYPES, DocumentDecodeError, OcrEngine, pdf_magic
@@ -31,16 +30,12 @@ IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/bmp", "image/tiff
 NEUTRAL_TYPES = {"", "application/octet-stream", "binary/octet-stream"}
 
 engine = OcrEngine()
-cache = ParseCache(parse_cache_directory(), parse_cache_ttl_hours())
+cache = ParseCache(parse_cache_ttl_hours())
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    logger.info(
-        "Parse cache directory %s, lifetime %s h",
-        cache.directory,
-        display_ttl_hours(cache.ttl_hours),
-    )
+    logger.info("Parse cache in memory, lifetime %s h", display_ttl_hours(cache.ttl_hours))
     if cache.enabled:
         await run_in_threadpool(cache.purge_expired)
     if PRELOAD_MODEL:
@@ -150,7 +145,7 @@ async def parse(background_tasks: BackgroundTasks, file: UploadFile = File(...))
 
 
 def _schedule_purge(background_tasks: BackgroundTasks) -> None:
-    """Sweep the cache directory after this response, at most once a minute."""
+    """Sweep expired cache entries after this response, at most once a minute."""
     if cache.claim_purge():
         background_tasks.add_task(cache.purge_expired)
 

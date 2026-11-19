@@ -54,12 +54,9 @@ RUN python -c "from app.ocr import OcrEngine; OcrEngine().load()"
 
 COPY app ./app
 
-# Owned by `app` (the USER above) so a new named volume inherits that owner.
-RUN mkdir -p /home/app/.cache/invoice-ocr
-
 # Lifetime is hours. Empty or unset is the same 24-hour default inside the app.
-ENV PARSE_CACHE_TTL_HOURS=24 \
-    PARSE_CACHE_DIR=/home/app/.cache/invoice-ocr
+# The cache itself is process memory, so this value is read at startup.
+ENV PARSE_CACHE_TTL_HOURS=24
 
 EXPOSE 8741
 

@@ -13,7 +13,7 @@
       <span class="brand-mark">OCR</span>
       <div>
         <h1>Invoice OCR</h1>
-        <p>PaddleOCR на CPU · распознавание текста инвойса и разбор платёжных полей</p>
+        <p>PaddleOCR на CPU · распознавание текста инвойсов на английском и разбор платёжных полей</p>
       </div>
     </div>
     <a class="api-link" href="/docs" target="_blank" rel="noopener">API /docs</a>
@@ -38,14 +38,6 @@
         <span id="file-name" class="file-name">Файл не выбран</span>
         <button id="clear-btn" class="btn btn-ghost" type="button" hidden>Очистить</button>
       </div>
-      <label class="lang-row" for="lang-select">
-        <span>Язык документа</span>
-        <select id="lang-select" class="select">
-          {% for lang in languages %}
-          <option value="{{ lang.code }}" {% if lang.code == default_lang %}selected{% endif %}>{{ lang.label }}</option>
-          {% endfor %}
-        </select>
-      </label>
       <button id="parse-btn" class="btn btn-primary" type="button" disabled>Распознать</button>
       <p id="status" class="status" role="status" aria-live="polite"></p>
     </section>

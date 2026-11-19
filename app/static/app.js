@@ -26,7 +26,6 @@
   const rawText = $("raw-text");
   const metaLine = $("meta-line");
   const copyBtn = $("copy-btn");
-  const langSelect = $("lang-select");
 
   let currentFile = null;
   let lastJson = null;
@@ -148,7 +147,6 @@
 
     const form = new FormData();
     form.append("file", currentFile, currentFile.name);
-    form.append("lang", langSelect.value);
 
     try {
       const resp = await fetch("/api/parse", { method: "POST", body: form });

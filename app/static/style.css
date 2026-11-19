@@ -145,26 +145,6 @@ code {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-.lang-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin: 0 0 12px;
-  font-size: 13px;
-  color: var(--muted);
-}
-.select {
-  font: inherit;
-  font-size: 14px;
-  color: var(--text);
-  background: var(--panel-2);
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  padding: 8px 12px;
-  min-width: 200px;
-}
-
 .status { min-height: 20px; margin: 12px 0 0; font-size: 13px; color: var(--muted); }
 .status-ok { color: var(--ok); }
 .status-error { color: var(--err); }

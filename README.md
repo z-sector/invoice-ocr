@@ -22,9 +22,9 @@ The service is API only: there is no web UI. The fields correspond to the `Parse
 Requirements: Docker, GNU Make, curl.
 
 ```bash
-make up                              # build the image and start the container on port 8741
-make wait                            # block until the service is ready
-make parse FILE=path/to/invoice.pdf  # send a document, print the JSON response
+make up                                  # build the image and start the container on port 8741
+make wait                                # block until the service is ready
+make parse FILE=example/invoice-usd.png  # send a sample invoice, print the JSON response
 ```
 
 The OCR models (about 140 MB) are downloaded from Hugging Face while the image is built and stored in it, so the
@@ -60,7 +60,6 @@ Variables, passed as `make <target> NAME=value`:
 | `PORT` | `8741` | Host port (`run`, `up`, `dev`) and the port the API targets call |
 | `IMAGE`, `TAG` | `invoice-ocr`, `latest` | Image name and tag |
 | `CONTAINER` | `invoice-ocr` | Container name |
-| `ENV_FILE` | `.env` | File with environment variables, passed to the container when it exists |
 | `URL` | `http://localhost:$(PORT)` | Base URL used by `health`, `wait` and `parse` |
 | `WAIT_TIMEOUT` | `300` | Seconds `make wait` keeps trying |
 | `DOCKER` | `docker` | Container CLI |
@@ -77,13 +76,12 @@ Recognizes a document and returns the extracted fields. The request is `multipar
 
 | Field | Required | Description |
 | --- | --- | --- |
-| `file` | yes | The invoice: an image (JPG, PNG, WEBP, BMP, TIFF, GIF) or a PDF, up to `MAX_UPLOAD_MB` (15 MB by default) |
+| `file` | yes | The invoice: an image (JPG, PNG, WEBP, BMP, TIFF, GIF) or a PDF, up to 15 MB (`MAX_UPLOAD_MB` in `app/config.py`) |
 
 The document is recognized with the English model; there is no language parameter.
 
 ```bash
-curl -s -F "file=@invoice.jpg" http://localhost:8741/api/parse
-curl -s -F "file=@invoice.pdf" http://localhost:8741/api/parse
+curl -s -F "file=@example/invoice-usd.png" http://localhost:8741/api/parse
 ```
 
 Response `200 OK`:
@@ -101,27 +99,29 @@ Response `200 OK`:
   },
   "sources": {
     "vendor_name": "Blue Ridge Supply Co. INVOICE",
-    "invoice_number": "Invoice No: 2026-1142",
+    "invoice_number": "Invoice No: 2026-1142 Northwind Traders LLC",
     "amount": "Amount Due: $2,290.50",
     "currency": "Amount Due: $2,290.50",
-    "bank_name_on_invoice": "Bank: Wells Fargo Bank, N.A.",
+    "bank_name_on_invoice": "Bank Name: Wells Fargo Bank, N.A.",
     "account_number_on_invoice": "Account Number: 4000123456789",
     "routing_on_invoice": "Routing Number: 121000248"
   },
   "ocr": {
-    "lines": ["Blue Ridge Supply Co. INVOICE", "Invoice No: 2026-1142", "..."],
-    "line_count": 16,
+    "lines": ["Blue Ridge Supply Co. INVOICE", "412 Harbor Street, Asheville, NC 28801", "..."],
+    "line_count": 19,
     "mean_confidence": 0.998,
-    "image_size": [1240, 1500],
+    "image_size": [1240, 1754],
     "page_count": 1,
     "pages_in_file": 1,
-    "ocr_ms": 2615,
-    "total_ms": 2633,
+    "ocr_ms": 3494,
+    "total_ms": 3510,
     "engine": "PaddleOCR (CPU, lang=en)"
   },
-  "file": { "name": "invoice.png", "size": 82511, "content_type": "image/png", "kind": "image" }
+  "file": { "name": "invoice-usd.png", "size": 105589, "content_type": "image/png", "kind": "image" }
 }
 ```
+
+The response is shortened here: `ocr.lines` has 19 entries.
 
 | Key | Description |
 | --- | --- |
@@ -155,10 +155,80 @@ Recognition takes 2–20 seconds per page on a CPU. Requests are processed one a
 `lang` is the language of the model; `model_loaded` tells whether it is already in memory. With `PRELOAD_MODEL = True`
 the server starts listening only after the model is loaded, so a response also means the service is ready.
 
+## Examples
+
+The `example/` directory contains sample invoices for trying the API. They are synthetic: the companies, amounts and
+account numbers are made up. The directory is not copied into the Docker image.
+
+| File | What it shows |
+| --- | --- |
+| `example/invoice-usd.png` | A clean single-page image with US bank details: account and routing number |
+| `example/invoice-eur.pdf` | A two-page PDF: the amount is on page 1, the bank details (IBAN, SWIFT/BIC) on page 2 |
+| `example/invoice-gbp.jpg` | A photo of a printed page, slightly tilted, with UK bank details: account number and sort code |
+
+Run the commands from the repository root while the service listens on port 8741. Each response has the shape
+described under [`POST /api/parse`](#post-apiparse); only its `invoice` object is shown here.
+
+```bash
+curl -s -F "file=@example/invoice-usd.png" http://localhost:8741/api/parse
+```
+
+```json
+{
+  "vendor_name": "Blue Ridge Supply Co.",
+  "invoice_number": "2026-1142",
+  "amount": "2290.50",
+  "currency": "USD",
+  "bank_name_on_invoice": "Wells Fargo Bank, N.A.",
+  "account_number_on_invoice": "4000123456789",
+  "routing_on_invoice": "121000248"
+}
+```
+
+```bash
+curl -s -F "file=@example/invoice-eur.pdf" http://localhost:8741/api/parse
+```
+
+```json
+{
+  "vendor_name": "Nordlicht Software GmbH",
+  "invoice_number": "RE-2026-0387",
+  "amount": "4819.50",
+  "currency": "EUR",
+  "bank_name_on_invoice": "Deutsche Bank AG",
+  "account_number_on_invoice": "DE89370400440532013000",
+  "routing_on_invoice": "DEUTDEFF"
+}
+```
+
+Both pages are recognized, so `ocr.page_count` and `ocr.pages_in_file` are `2`.
+
+```bash
+curl -s -F "file=@example/invoice-gbp.jpg" http://localhost:8741/api/parse
+```
+
+```json
+{
+  "vendor_name": "Harbour & Finch Ltd",
+  "invoice_number": "HF-00921",
+  "amount": "1281.60",
+  "currency": "GBP",
+  "bank_name_on_invoice": "Barclays Bank PLC",
+  "account_number_on_invoice": "20457731",
+  "routing_on_invoice": "20-32-06"
+}
+```
+
+To print only the `invoice` object, pipe the response through `jq`:
+
+```bash
+curl -s -F "file=@example/invoice-usd.png" http://localhost:8741/api/parse | jq .invoice
+```
+
 ## Configuration
 
-The OCR settings are constants in `app/config.py`. To change one, edit the file and rebuild the image (`make up`) or
-restart the local server.
+The service reads no settings from environment variables: all of them are constants in `app/config.py`. To change
+one, edit the file and rebuild the image (`make up`) or restart the local server.
 
 | Constant | Value | Purpose |
 | --- | --- | --- |
@@ -168,13 +238,10 @@ restart the local server.
 | `USE_DOC_UNWARPING` | `False` | Flatten curved pages (a separate model) |
 | `USE_TEXTLINE_ORIENTATION` | `True` | Detect the orientation of individual text lines |
 | `PRELOAD_MODEL` | `True` | Load the model at startup; `False` loads it on the first request |
+| `MAX_UPLOAD_MB` | `15` | Upload size limit; a larger file is rejected with `413` |
 | `MAX_IMAGE_SIDE` | `2200` | Larger images and PDF pages are downscaled to this size on the longest side |
 | `PDF_RENDER_DPI` | `170` | Resolution used to rasterize PDF pages |
 | `MAX_PDF_PAGES` | `10` | Number of leading PDF pages to recognize; the rest are skipped |
-
-The upload size limit is the only environment variable: `MAX_UPLOAD_MB` (default `15`). For Docker, copy
-`.env.example` to `.env` and edit it; `make run` passes the file to the container. For a local run, export the
-variable before `make dev`.
 
 ## Docker image
 
@@ -185,6 +252,9 @@ models take 140 MB. It has a `HEALTHCHECK` that calls `/health`.
 
 The models are downloaded at build time into `/home/app/.paddlex` inside the image, so the build needs internet
 access and the container does not: it starts without network access and without a volume.
+
+`.dockerignore` is an allow-list, so only `app/`, `pyproject.toml` and `uv.lock` reach the build; `example/` and
+everything else in the repository stay out of the image.
 
 The same without Make:
 
@@ -211,12 +281,12 @@ Models are cached in `~/.paddlex/official_models/`. Add a dependency with `uv ad
 
 ```
 app/main.py      FastAPI application: endpoints, upload validation
-app/config.py    OCR settings (constants)
+app/config.py    Service settings (constants)
 app/ocr.py       PaddleOCR wrapper, image decoding, PDF rasterization
 app/parser.py    Rule-based field extraction
+example/         Sample invoices for trying the API (not part of the image)
 Dockerfile       Container image
 Makefile         Build, run and maintenance commands
-.env.example     Environment variables template
 pyproject.toml   Dependencies (locked in uv.lock)
 ```
 

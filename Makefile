@@ -2,8 +2,6 @@ IMAGE         ?= invoice-ocr
 TAG           ?= latest
 CONTAINER     ?= invoice-ocr
 PORT          ?= 8741
-# Passed to the container with --env-file when the file exists
-ENV_FILE      ?= .env
 DOCKER        ?= docker
 URL           ?= http://localhost:$(PORT)
 WAIT_TIMEOUT  ?= 300
@@ -35,7 +33,6 @@ run: ## (Re)start the container in the background from the built image
 	@$(DOCKER) stop $(CONTAINER) >/dev/null 2>&1; $(DOCKER) rm $(CONTAINER) >/dev/null 2>&1 || true
 	$(DOCKER) run -d --name $(CONTAINER) --restart unless-stopped \
 		-p $(PORT):$(CONTAINER_PORT) \
-		$(if $(wildcard $(ENV_FILE)),--env-file $(ENV_FILE)) \
 		$(IMAGE_REF)
 	@echo "Starting on $(URL) - run 'make wait' to block until it is ready, 'make logs' to follow the output."
 

@@ -28,20 +28,8 @@ MAX_PDF_PAGES = int(os.environ.get("OCR_MAX_PDF_PAGES", "10"))
 PAGE_GAP_PX = 48
 PDF_TYPES = {"application/pdf", "application/x-pdf"}
 OCR_LANG = os.environ.get("OCR_LANG", "en")
-# Languages the UI offers. Each one loads its own recognition model on first use.
+# Languages the API accepts. Each one loads its own recognition model on first use.
 OCR_LANGS = tuple(code.strip() for code in os.environ.get("OCR_LANGS", "en,ru").split(",") if code.strip())
-LANG_LABELS = {
-    "en": "English / Latin",
-    "ru": "Русский + латиница",
-    "ch": "中文 + English",
-    "fr": "Français",
-    "de": "Deutsch",
-    "es": "Español",
-    "it": "Italiano",
-    "uk": "Українська",
-    "japan": "日本語",
-    "korean": "한국어",
-}
 
 
 class DocumentDecodeError(ValueError):

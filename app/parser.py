@@ -38,7 +38,7 @@ class Line:
 class ParseOutput:
     invoice: ParsedInvoiceDS
     lines: list[Line]
-    # Which OCR line each field came from, for showing evidence in the UI.
+    # Which OCR line each field came from, returned to the client as evidence.
     sources: dict[str, str] = field(default_factory=dict)
 
 

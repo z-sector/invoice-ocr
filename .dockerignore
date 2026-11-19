@@ -1,0 +1,7 @@
+# Allow-list: only what the image build reads.
+*
+!app/
+!pyproject.toml
+!uv.lock
+**/__pycache__/
+**/*.py[co]

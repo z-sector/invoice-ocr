@@ -38,7 +38,7 @@ Run `make` (or `make help`) to list the targets.
 | --- | --- |
 | `make build` | Build the image `invoice-ocr:latest`, downloading the OCR models into it |
 | `make rebuild` | Build without the layer cache, pulling fresh base images |
-| `make run` | (Re)start the container in the background from the built image |
+| `make run` | (Re)start the container in the background; the parse cache is kept in a volume |
 | `make up` | `build`, then `run` |
 | `make stop` | Stop and remove the container |
 | `make restart` | `stop`, then `run` |
@@ -49,6 +49,7 @@ Run `make` (or `make help`) to list the targets.
 | `make health` | `GET /health` |
 | `make wait` | Block until `/health` answers (fails after `WAIT_TIMEOUT` seconds) |
 | `make parse FILE=...` | `POST /api/parse` with the given file |
+| `make test` | Run the unit tests |
 | `make install` | Local development: create `.venv` from `uv.lock` |
 | `make dev` | Local development: run the API with auto-reload |
 | `make lock` | Local development: re-resolve `uv.lock` after editing `pyproject.toml` |
@@ -63,6 +64,8 @@ Variables, passed as `make <target> NAME=value`:
 | `URL` | `http://localhost:$(PORT)` | Base URL used by `health`, `wait` and `parse` |
 | `WAIT_TIMEOUT` | `300` | Seconds `make wait` keeps trying |
 | `DOCKER` | `docker` | Container CLI |
+| `PARSE_CACHE_TTL_HOURS` | `24` | Cache lifetime in hours, passed into the container by `run` |
+| `CACHE_VOLUME` | `$(CONTAINER)-cache` | Docker volume mounted on the cache directory |
 
 `make run` does not rebuild: after changing the code or `app/config.py` run `make up`.
 
@@ -117,7 +120,8 @@ Response `200 OK`:
     "total_ms": 3510,
     "engine": "PaddleOCR (CPU, lang=en)"
   },
-  "file": { "name": "invoice-usd.png", "size": 105589, "content_type": "image/png", "kind": "image" }
+  "file": { "name": "invoice-usd.png", "size": 105589, "content_type": "image/png", "kind": "image" },
+  "cache": { "hit": false, "ttl_hours": 24 }
 }
 ```
 
@@ -131,8 +135,11 @@ The response is shortened here: `ocr.lines` has 19 entries.
 | `ocr.mean_confidence` | Average recognition confidence of the text boxes, from 0 to 1 |
 | `ocr.image_size` | Width and height in pixels of the recognized image; PDF pages are stacked vertically |
 | `ocr.page_count`, `ocr.pages_in_file` | Pages that were recognized and pages in the file (a PDF is cut at `MAX_PDF_PAGES`) |
-| `ocr.ocr_ms`, `ocr.total_ms` | Recognition time and total processing time, in milliseconds |
+| `ocr.ocr_ms`, `ocr.total_ms` | Recognition time and total processing time, in milliseconds. On a cache hit `total_ms` is the time to read the cache, and `ocr_ms` stays the time the file was originally recognized |
 | `file.kind` | `image` or `pdf` |
+| `cache.hit` | `true` when this response was served from the local cache and OCR did not run |
+| `cache.ttl_hours` | Cache lifetime in hours (`0` means the cache is off) |
+| `cache.age_seconds` | On a hit, how many seconds ago this file was parsed. The lifetime is counted from that moment and is not extended by later hits |
 
 Errors are returned as `{"detail": "..."}`:
 
@@ -144,16 +151,17 @@ Errors are returned as `{"detail": "..."}`:
 | `422` | The `file` field is missing |
 | `500` | Text recognition failed |
 
-Recognition takes 2–20 seconds per page on a CPU. Requests are processed one at a time.
+Recognition takes 2–20 seconds per page on a CPU. Requests are processed one at a time. A file whose bytes are already in the local cache, and younger than `PARSE_CACHE_TTL_HOURS`, is returned without recognition.
 
 ### `GET /health`
 
 ```json
-{ "status": "ok", "device": "cpu", "lang": "en", "model_loaded": true }
+{ "status": "ok", "device": "cpu", "lang": "en", "model_loaded": true, "cache_ttl_hours": 24 }
 ```
 
 `lang` is the language of the model; `model_loaded` tells whether it is already in memory. With `PRELOAD_MODEL = True`
 the server starts listening only after the model is loaded, so a response also means the service is ready.
+`cache_ttl_hours` is the parse-cache lifetime in hours; `0` means the cache is off.
 
 ## Examples
 
@@ -227,8 +235,26 @@ curl -s -F "file=@example/invoice-usd.png" http://localhost:8741/api/parse | jq 
 
 ## Configuration
 
-The service reads no settings from environment variables: all of them are constants in `app/config.py`. To change
-one, edit the file and rebuild the image (`make up`) or restart the local server.
+Recognition and upload limits are constants in `app/config.py`. To change one, edit the file and rebuild the image
+(`make up`) or restart the local server.
+
+The parse cache is configured with environment variables. The lifetime is measured in hours. When
+`PARSE_CACHE_TTL_HOURS` is unset or empty, an entry lasts 24 hours (one day). `0` turns the cache off. A fractional
+value is allowed: `1.5` and `1,5` are both an hour and a half. `make restart` passes `PARSE_CACHE_TTL_HOURS` into
+the container, so a new lifetime takes effect without a rebuild. The constants in `app/config.py` still need one.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `PARSE_CACHE_TTL_HOURS` | `24` | How long a cached parse is reused, in hours. `0` disables the cache |
+| `PARSE_CACHE_DIR` | `~/.cache/invoice-ocr` | Directory of the on-disk cache. The Docker image sets `/home/app/.cache/invoice-ocr` |
+
+`make run` stores that directory in the Docker volume `invoice-ocr-cache` (override with `CACHE_VOLUME`), so the cache
+survives `make restart`. Delete it with `docker volume rm invoice-ocr-cache` after `make stop`. Local `make dev`
+inherits the variables from the shell and, when `PARSE_CACHE_DIR` is unset, writes to `~/.cache/invoice-ocr`.
+
+The cache key is the SHA-256 of the uploaded bytes. The same file uploaded again, under any name, reuses the stored
+fields until the lifetime runs out. A change to the parser, the OCR code, or the recognition settings invalidates
+old entries. Only successful parses are stored.
 
 | Constant | Value | Purpose |
 | --- | --- | --- |
@@ -260,7 +286,10 @@ The same without Make:
 
 ```bash
 docker build -t invoice-ocr .
-docker run -d --name invoice-ocr -p 8741:8741 invoice-ocr
+docker run -d --name invoice-ocr -p 8741:8741 \
+  -e PARSE_CACHE_TTL_HOURS=24 \
+  -v invoice-ocr-cache:/home/app/.cache/invoice-ocr \
+  invoice-ocr
 ```
 
 ## Local development
@@ -272,6 +301,7 @@ from PyPI.
 ```bash
 make install    # uv sync --locked
 make dev        # uvicorn with auto-reload on http://localhost:8741
+make test       # unit tests, including the parse cache
 ```
 
 Models are cached in `~/.paddlex/official_models/`. Add a dependency with `uv add <package>`; after editing
@@ -280,10 +310,12 @@ Models are cached in `~/.paddlex/official_models/`. Add a dependency with `uv ad
 ## Project layout
 
 ```
-app/main.py      FastAPI application: endpoints, upload validation
-app/config.py    Service settings (constants)
+app/main.py      FastAPI application: endpoints, upload validation, cache lookup
+app/config.py    Service settings (constants, plus the cache environment variables)
+app/cache.py     Local parse cache. Lifetime is in hours, default 24
 app/ocr.py       PaddleOCR wrapper, image decoding, PDF rasterization
 app/parser.py    Rule-based field extraction
+tests/           Unit tests
 example/         Sample invoices for trying the API (not part of the image)
 Dockerfile       Container image
 Makefile         Build, run and maintenance commands
@@ -292,8 +324,10 @@ pyproject.toml   Dependencies (locked in uv.lock)
 
 ## How parsing works
 
-`app/ocr.py` runs PaddleOCR (`device="cpu"`: text detection, text line orientation classification, recognition) and
-returns text boxes with coordinates. A PDF is first rasterized with `pypdfium2`, page by page up to
+`POST /api/parse` hashes the upload. When that hash is already in the local cache and younger than
+`PARSE_CACHE_TTL_HOURS`, the stored fields are returned and OCR does not run. Otherwise `app/ocr.py` runs PaddleOCR
+(`device="cpu"`: text detection, text line orientation classification, recognition) and returns text boxes with
+coordinates. A PDF is first rasterized with `pypdfium2`, page by page up to
 `MAX_PDF_PAGES`; the coordinates of later pages are shifted down, so the document is parsed as one page.
 `app/parser.py` groups the boxes into rows by vertical position and then applies rules:
 

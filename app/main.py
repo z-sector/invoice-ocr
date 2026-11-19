@@ -6,7 +6,7 @@ import logging
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
@@ -68,7 +68,7 @@ async def health() -> dict:
 
 
 @app.post("/api/parse")
-async def parse(file: UploadFile = File(...)) -> JSONResponse:
+async def parse(background_tasks: BackgroundTasks, file: UploadFile = File(...)) -> JSONResponse:
     content_type = (file.content_type or "").split(";")[0].strip().lower()
     filename = file.filename or ""
 
@@ -98,6 +98,7 @@ async def parse(file: UploadFile = File(...)) -> JSONResponse:
         total_ms = int((time.perf_counter() - started) * 1000)
         age = cache.age_seconds(cached.stored_at)
         logger.info("Parse cache hit for %s, age %ss", file.filename, age)
+        _schedule_purge(background_tasks)
         return JSONResponse(
             _response_body(
                 invoice=cached.invoice,
@@ -135,6 +136,7 @@ async def parse(file: UploadFile = File(...)) -> JSONResponse:
     if await _cache_put(key, invoice=invoice, sources=parsed.sources, ocr=ocr_body):
         logger.info("Cached parse of %s", file.filename)
     total_ms = int((time.perf_counter() - started) * 1000)
+    _schedule_purge(background_tasks)
     return JSONResponse(
         _response_body(
             invoice=invoice,
@@ -145,6 +147,12 @@ async def parse(file: UploadFile = File(...)) -> JSONResponse:
             cache_meta=_cache_meta(hit=False),
         )
     )
+
+
+def _schedule_purge(background_tasks: BackgroundTasks) -> None:
+    """Sweep the cache directory after this response, at most once a minute."""
+    if cache.claim_purge():
+        background_tasks.add_task(cache.purge_expired)
 
 
 async def _cache_get(key: str):

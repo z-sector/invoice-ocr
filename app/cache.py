@@ -3,6 +3,10 @@
 Entries stay valid for PARSE_CACHE_TTL_HOURS (default 24, one day) from the moment
 they were stored. The lifetime is absolute: reading an entry does not extend it.
 Zero disables the cache. The directory is PARSE_CACHE_DIR, or ~/.cache/invoice-ocr.
+
+Reading a file deletes that file once it is older than the lifetime. The rest of the
+directory is swept by purge_expired, which the API runs in a background task at most
+once a minute and once at startup.
 """
 
 from __future__ import annotations
@@ -124,7 +128,6 @@ class ParseCache:
             return None
         path = self._path(key)
         with self._lock:
-            self._maybe_purge_unlocked()
             return self._read_unlocked(path)
 
     def put(self, key: str, *, invoice: dict, sources: dict, ocr: dict) -> bool:
@@ -145,17 +148,31 @@ class ParseCache:
             try:
                 self._ensure_dir()
                 self._write_atomic(path, data)
-                self._maybe_purge_unlocked()
             except OSError:
                 logger.warning("Could not store parse cache entry %s", path.name, exc_info=True)
                 return False
         return True
 
-    def purge_expired(self) -> None:
-        if not self.enabled or not self.directory.exists():
-            return
+    def claim_purge(self) -> bool:
+        """Reserve the once-a-minute directory sweep. The caller runs purge_expired afterwards."""
+        if not self.enabled:
+            return False
+        now = self._clock()
         with self._lock:
-            self._purge_expired_unlocked()
+            if now < self._next_purge:
+                return False
+            self._next_purge = now + _PURGE_EVERY_SECONDS
+            return True
+
+    def purge_expired(self) -> None:
+        """Delete expired and unreadable entries. Safe to run after the response is sent."""
+        if not self.enabled:
+            return
+        try:
+            self._purge_files()
+        except OSError:
+            logger.warning("Could not purge the parse cache", exc_info=True)
+        with self._lock:
             self._next_purge = self._clock() + _PURGE_EVERY_SECONDS
 
     def _path(self, key: str) -> Path:
@@ -200,29 +217,22 @@ class ParseCache:
                 pass
             raise
 
-    def _maybe_purge_unlocked(self) -> None:
-        now = self._clock()
-        if now < self._next_purge:
-            return
-        try:
-            self._purge_expired_unlocked()
-        except OSError:
-            logger.warning("Could not purge the parse cache", exc_info=True)
-        self._next_purge = now + _PURGE_EVERY_SECONDS
-
-    def _purge_expired_unlocked(self) -> None:
+    def _purge_files(self) -> None:
         if not self.directory.is_dir():
             return
+        # Lock one file at a time so a request can read or store another file during the sweep.
         for path in list(self.directory.glob("*.json")):
-            if self._file_is_stale(path):
-                self._discard(path)
+            with self._lock:
+                if self._file_is_stale(path):
+                    self._discard(path)
         for path in list(self.directory.glob(".*.tmp")):
-            try:
-                age = self._clock() - path.stat().st_mtime
-            except OSError:
-                continue
-            if age >= self.ttl_seconds:
-                self._discard(path)
+            with self._lock:
+                try:
+                    age = self._clock() - path.stat().st_mtime
+                except OSError:
+                    continue
+                if age >= self.ttl_seconds:
+                    self._discard(path)
 
     def _file_is_stale(self, path: Path) -> bool:
         try:

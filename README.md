@@ -256,6 +256,10 @@ The cache key is the SHA-256 of the uploaded bytes. The same file uploaded again
 fields until the lifetime runs out. A change to the parser, the OCR code, or the recognition settings invalidates
 old entries. Only successful parses are stored.
 
+The request deletes its own file as soon as that file is older than the lifetime. Other expired files are removed
+after the response, by a FastAPI background task, at most once a minute. The process also sweeps the directory once
+at startup. Until one of those runs, an expired file that nobody asks for stays on disk.
+
 | Constant | Value | Purpose |
 | --- | --- | --- |
 | `OCR_LANG` | `"en"` | Language of the model. The service is built for English only |

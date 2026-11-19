@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.cache import ParseCache, content_key, settings_fingerprint
+from app.cache import CACHE_SCHEMA, ParseCache, content_key, settings_fingerprint
 from app.config import (
     DEFAULT_PARSE_CACHE_TTL_HOURS,
     display_ttl_hours,
@@ -120,6 +120,27 @@ class ParseCacheTests(unittest.TestCase):
         self.now[0] = 1_000_000.0 + 24 * 3600
         self.assertIsNone(self.cache.get(key))
         self.assertFalse((Path(self.tmp.name) / f"{key}.json").exists())
+
+    def test_get_does_not_sweep_other_expired_files(self) -> None:
+        asked = content_key(b"asked")
+        other = content_key(b"other")
+        self.cache.put(asked, invoice={"n": "asked"}, sources={}, ocr={})
+        self.cache.put(other, invoice={"n": "other"}, sources={}, ocr={})
+        self.now[0] += 24 * 3600
+        self.cache.put(other, invoice={"n": "fresh"}, sources={}, ocr={})
+        self.assertIsNone(self.cache.get(asked))
+        self.assertFalse((Path(self.tmp.name) / f"{asked}.json").exists())
+        self.assertTrue((Path(self.tmp.name) / f"{other}.json").exists())
+
+    def test_claim_purge_is_at_most_once_a_minute(self) -> None:
+        self.assertTrue(self.cache.claim_purge())
+        self.assertFalse(self.cache.claim_purge())
+        self.now[0] += 59
+        self.assertFalse(self.cache.claim_purge())
+        self.now[0] += 1
+        self.assertTrue(self.cache.claim_purge())
+        disabled = ParseCache(Path(self.tmp.name) / "off", ttl_hours=0, fingerprint="x")
+        self.assertFalse(disabled.claim_purge())
 
     def test_zero_ttl_disables_the_cache(self) -> None:
         cache = ParseCache(Path(self.tmp.name) / "off", ttl_hours=0, fingerprint="test-fingerprint")
@@ -377,6 +398,32 @@ class ParseApiTests(unittest.TestCase):
         self.assertEqual(broken_again.status_code, 400)
         self.assertEqual(self.engine.calls, 2)
         self.assertEqual(list(Path(self.tmp.name).glob("*.json")), [])
+
+    def test_background_purge_removes_other_expired_files_after_the_response(self) -> None:
+        with self.TestClient(self.main.app) as client:
+            stale = Path(self.tmp.name) / f"{content_key(b'old-file')}.json"
+            stale.write_text(
+                json.dumps(
+                    {
+                        "schema": CACHE_SCHEMA,
+                        "fingerprint": "api",
+                        "stored_at": self.now[0] - 24 * 3600,
+                        "invoice": {},
+                        "sources": {},
+                        "ocr": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            held = self._post(client, "a.png", b"invoice-bytes")
+            self.assertEqual(held.status_code, 200, held.text)
+            self.assertTrue(stale.exists())
+
+            self.now[0] += 60
+            swept = self._post(client, "b.png", b"other-bytes")
+            self.assertEqual(swept.status_code, 200, swept.text)
+            self.assertFalse(stale.exists())
+            self.assertTrue((Path(self.tmp.name) / f"{content_key(b'other-bytes')}.json").exists())
 
     def test_fractional_ttl_is_reported_as_given(self) -> None:
         self.main.cache = ParseCache(self.tmp.name, ttl_hours=1.5, fingerprint="api", clock=lambda: self.now[0])

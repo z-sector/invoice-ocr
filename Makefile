@@ -5,6 +5,8 @@ PORT          ?= 8741
 DOCKER        ?= docker
 URL           ?= http://localhost:$(PORT)
 WAIT_TIMEOUT  ?= 300
+# Cache lifetime passed into the container, in hours. Empty in the app means 24 (one day).
+PARSE_CACHE_TTL_HOURS ?= 24
 # `make parse` argument
 FILE          ?=
 
@@ -33,6 +35,7 @@ run: ## (Re)start the container in the background from the built image
 	@$(DOCKER) stop $(CONTAINER) >/dev/null 2>&1; $(DOCKER) rm $(CONTAINER) >/dev/null 2>&1 || true
 	$(DOCKER) run -d --name $(CONTAINER) --restart unless-stopped \
 		-p $(PORT):$(CONTAINER_PORT) \
+		-e PARSE_CACHE_TTL_HOURS="$(PARSE_CACHE_TTL_HOURS)" \
 		$(IMAGE_REF)
 	@echo "Starting on $(URL) - run 'make wait' to block until it is ready, 'make logs' to follow the output."
 
@@ -84,6 +87,10 @@ parse: ## POST /api/parse: make parse FILE=invoice.pdf
 	@curl -sS --fail-with-body -F "file=@$(FILE)" $(URL)/api/parse && echo
 
 ##@ Local development (uv, no Docker)
+
+.PHONY: test
+test: ## Run the unit tests
+	uv run python -m unittest discover -s tests -v
 
 .PHONY: install
 install: ## Create .venv from uv.lock

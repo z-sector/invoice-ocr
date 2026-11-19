@@ -54,6 +54,10 @@ RUN python -c "from app.ocr import OcrEngine; OcrEngine().load()"
 
 COPY app ./app
 
+# Lifetime is hours. Empty or unset is the same 24-hour default inside the app.
+# The cache itself is process memory, so this value is read at startup.
+ENV PARSE_CACHE_TTL_HOURS=24
+
 EXPOSE 8741
 
 # The server only starts listening once the model is loaded, so "healthy" also means "ready".

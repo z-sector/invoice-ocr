@@ -6,7 +6,7 @@ Zero disables the cache. Entries live in this process and disappear on restart.
 
 Reading a key drops that entry once it is older than the lifetime. The rest of the
 cache is swept by purge_expired, which the API runs in a background task at most
-once a minute and once at startup.
+once a minute.
 """
 
 from __future__ import annotations

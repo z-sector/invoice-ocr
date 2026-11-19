@@ -331,19 +331,28 @@ class ParseApiTests(unittest.TestCase):
 
     def test_background_purge_removes_other_expired_entries_after_the_response(self) -> None:
         stale_key = content_key(b"old-file")
+        held_key = content_key(b"held-file")
         with self.TestClient(self.main.app) as client:
             self.now[0] -= 24 * 3600
             self.main.cache.put(stale_key, invoice={"n": "old"}, sources={}, ocr={})
             self.now[0] += 24 * 3600
-            held = self._post(client, "a.png", b"invoice-bytes")
-            self.assertEqual(held.status_code, 200, held.text)
-            self.assertIn(stale_key, self.main.cache._entries)
-
-            self.now[0] += 60
-            swept = self._post(client, "b.png", b"other-bytes")
+            swept = self._post(client, "a.png", b"invoice-bytes")
             self.assertEqual(swept.status_code, 200, swept.text)
             self.assertNotIn(stale_key, self.main.cache._entries)
-            self.assertIsNotNone(self.main.cache.get(content_key(b"other-bytes")))
+            self.assertIsNotNone(self.main.cache.get(content_key(b"invoice-bytes")))
+
+            self.now[0] -= 24 * 3600
+            self.main.cache.put(held_key, invoice={"n": "held"}, sources={}, ocr={})
+            self.now[0] += 24 * 3600
+            held = self._post(client, "b.png", b"other-bytes")
+            self.assertEqual(held.status_code, 200, held.text)
+            self.assertIn(held_key, self.main.cache._entries)
+
+            self.now[0] += 60
+            again = self._post(client, "c.png", b"third-bytes")
+            self.assertEqual(again.status_code, 200, again.text)
+            self.assertNotIn(held_key, self.main.cache._entries)
+            self.assertIsNotNone(self.main.cache.get(content_key(b"third-bytes")))
 
     def test_fractional_ttl_is_reported_as_given(self) -> None:
         self.main.cache = ParseCache(ttl_hours=1.5, clock=lambda: self.now[0])

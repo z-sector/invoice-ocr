@@ -36,8 +36,6 @@ cache = ParseCache(parse_cache_ttl_hours())
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     logger.info("Parse cache in memory, lifetime %s h", display_ttl_hours(cache.ttl_hours))
-    if cache.enabled:
-        await run_in_threadpool(cache.purge_expired)
     if PRELOAD_MODEL:
         await run_in_threadpool(engine.load)
     yield

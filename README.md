@@ -253,8 +253,8 @@ The cache key is the SHA-256 of the uploaded bytes. The same file uploaded again
 fields until the lifetime runs out. Only successful parses are stored.
 
 The request drops its own entry as soon as that entry is older than the lifetime. Other expired entries are removed
-after the response, by a FastAPI background task, at most once a minute. The process also sweeps once at startup.
-Until one of those runs, an expired entry that nobody asks for stays in memory.
+after the response, by a FastAPI background task, at most once a minute. The first successful parse after startup
+runs that sweep. Until it runs, an expired entry that nobody asks for stays in memory.
 
 | Constant | Value | Purpose |
 | --- | --- | --- |

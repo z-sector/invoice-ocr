@@ -2,21 +2,16 @@ IMAGE         ?= invoice-ocr
 TAG           ?= latest
 CONTAINER     ?= invoice-ocr
 PORT          ?= 8741
-MODELS_VOLUME ?= invoice-ocr-models
-# Languages whose models are downloaded into the image at build time, e.g. MODEL_LANGS=en,ru
-MODEL_LANGS   ?=
 # Passed to the container with --env-file when the file exists
 ENV_FILE      ?= .env
 DOCKER        ?= docker
 URL           ?= http://localhost:$(PORT)
 WAIT_TIMEOUT  ?= 300
-# `make parse` arguments
+# `make parse` argument
 FILE          ?=
-DOC_LANG      ?=
 
 IMAGE_REF      := $(IMAGE):$(TAG)
 CONTAINER_PORT := 8741
-MODELS_DIR     := /home/app/.paddlex
 
 .DEFAULT_GOAL := help
 
@@ -27,12 +22,12 @@ help: ## Show this help
 ##@ Docker
 
 .PHONY: build
-build: ## Build the image (MODEL_LANGS=en,ru bakes models in)
-	$(DOCKER) build --build-arg MODEL_LANGS=$(MODEL_LANGS) -t $(IMAGE_REF) .
+build: ## Build the image (downloads the OCR models into it)
+	$(DOCKER) build -t $(IMAGE_REF) .
 
 .PHONY: rebuild
 rebuild: ## Build the image without the layer cache
-	$(DOCKER) build --no-cache --pull --build-arg MODEL_LANGS=$(MODEL_LANGS) -t $(IMAGE_REF) .
+	$(DOCKER) build --no-cache --pull -t $(IMAGE_REF) .
 
 .PHONY: run
 run: ## (Re)start the container in the background from the built image
@@ -40,7 +35,6 @@ run: ## (Re)start the container in the background from the built image
 	@$(DOCKER) stop $(CONTAINER) >/dev/null 2>&1; $(DOCKER) rm $(CONTAINER) >/dev/null 2>&1 || true
 	$(DOCKER) run -d --name $(CONTAINER) --restart unless-stopped \
 		-p $(PORT):$(CONTAINER_PORT) \
-		-v $(MODELS_VOLUME):$(MODELS_DIR) \
 		$(if $(wildcard $(ENV_FILE)),--env-file $(ENV_FILE)) \
 		$(IMAGE_REF)
 	@echo "Starting on $(URL) - run 'make wait' to block until it is ready, 'make logs' to follow the output."
@@ -71,10 +65,6 @@ shell: ## Open a shell inside the running container
 clean: stop ## Remove the container and the image
 	-$(DOCKER) rmi $(IMAGE_REF)
 
-.PHONY: clean-models
-clean-models: stop ## Remove the container and the downloaded-models volume
-	-$(DOCKER) volume rm $(MODELS_VOLUME)
-
 ##@ API (against URL, default http://localhost:PORT)
 
 .PHONY: health
@@ -92,9 +82,9 @@ wait: ## Block until /health answers (WAIT_TIMEOUT seconds, default 300)
 	echo "Ready."
 
 .PHONY: parse
-parse: ## POST /api/parse: make parse FILE=invoice.pdf [DOC_LANG=ru]
-	@test -n "$(FILE)" || { echo "Usage: make parse FILE=path/to/invoice.pdf [DOC_LANG=ru]" >&2; exit 2; }
-	@curl -sS --fail-with-body -F "file=@$(FILE)" $(if $(DOC_LANG),-F "lang=$(DOC_LANG)") $(URL)/api/parse && echo
+parse: ## POST /api/parse: make parse FILE=invoice.pdf
+	@test -n "$(FILE)" || { echo "Usage: make parse FILE=path/to/invoice.pdf" >&2; exit 2; }
+	@curl -sS --fail-with-body -F "file=@$(FILE)" $(URL)/api/parse && echo
 
 ##@ Local development (uv, no Docker)
 

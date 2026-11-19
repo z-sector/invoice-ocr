@@ -1,7 +1,6 @@
 """OCR settings. Every value is a plain constant: edit this file to change how recognition runs.
 
-The Docker image downloads the models these settings select at build time, so rebuild the image after
-changing anything in the "Model" block.
+The Docker image contains this file and the models it selects, so a change takes effect after a rebuild (`make up`).
 """
 
 # --- Model -------------------------------------------------------------------

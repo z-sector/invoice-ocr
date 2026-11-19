@@ -8,7 +8,7 @@ requires-python = ">=3.11,<3.14"
 dependencies = [
     # CPU build. The GPU build is a separate package (paddlepaddle-gpu), so no custom index is needed.
     "paddlepaddle==3.2.0",
-    "paddleocr==3.7.0",
+    "paddleocr==3.3.3",
     "fastapi==0.162.4",
     "uvicorn[standard]==0.54.0",
     "python-multipart==0.0.33",
